@@ -1,512 +1,894 @@
-// =========================================================
-// DATASETS / ASSETS
-// =========================================================
 
-// 1. OpenLandMap USDA Soil Texture Class
-var soil = ee.Image('OpenLandMap/SOL/SOL_TEXTURE-CLASS_USDA-TT_M/v02');
-
-// 2. Sentinel-2 Level-1C
-var s2 = ee.ImageCollection('COPERNICUS/S2_HARMONIZED');
-
-// 3. MODIS Land Cover
-var modis = ee.ImageCollection('MODIS/061/MCD12Q1');
-
-// 4. Bangladesh District shapefile
-var district = ee.FeatureCollection('projects/ee-sohan31du/assets/SHP/BD_District');
-
-// 5. Dynamic World Land Use/Land Cover
-var LULC = ee.ImageCollection('GOOGLE/DYNAMICWORLD/V1');
-
-// 6. NASADEM 30 m
-var NDEM = ee.Image('NASA/NASADEM_HGT/001');
-
-// 7. CHIRPS Daily Rainfall
-var CHIRPS = ee.ImageCollection('UCSB-CHG/CHIRPS/DAILY');
-
-// 8. HydroSHEDS Level-7 Basins
-var basins7 = ee.FeatureCollection('WWF/HydroSHEDS/v1/Basins/hybas_7');
-
-// 9. Bangladesh Division shapefile
-var division = ee.FeatureCollection('projects/ee-sohan31du/assets/SHP/BD_Division');
-
-// 10. SRTM DEM 30 m
-var DEM = ee.Image('USGS/SRTMGL1_003');
-
-// 11. Visualization parameters
-var imageVisParam = {min: 0,max: 2};
-
-
-
-// ================== BASIN (AOI) ==================
-// Filter basin by HYBAS_ID
-var basin = basins7.filter(ee.Filter.eq('HYBAS_ID', 4070912240));
-Map.addLayer(basin, {}, 'Teesta Basin', 0);
-
+// ============================================================================
+// LOWER TEESTA: SEASONAL SOIL LOSS & SEDIMENT YIELD, 2018-2025
+// Pre-monsoon : March 1-April 30
+// Post-monsoon: October 1-November 30
+// 16 soil-loss maps + 16 sediment-yield maps
+// Two separate charts (Pre vs Post for each variable)
+// One combined aggregation for mean / min / max statistics
 //
-// ================== REGION OF INTEREST (ROI) ==================
-var fieldName = 'ADM1_EN';
-var valuesToShow = ['Rangpur'];
-var roi = division.filter(ee.Filter.inList(fieldName, valuesToShow));
-Map.addLayer(roi, {}, 'ROI', 0);
+// Original K, LS, R, C, P, and logistic SDR equations retained.
+// ============================================================================
+
+// 1. SETTINGS
+var START_YEAR = 2018;
+var END_YEAR = 2025;
+var ANALYSIS_SCALE = 30;
+
+// Optional exports
+var EXPORT_MAPS = false;
+var EXPORT_CSV = false;
 
 
-// ================== CLIP AOI BY ROI ==================
-// Convert ROI to a single geometry
-var roiGeom = roi.geometry();
+// ============================================================================
+// 2. DATA SOURCES
+// ============================================================================
 
-// Clip AOI using intersection
-var aoi = basin.map(function(feature) {
-  return feature.intersection(roiGeom, ee.ErrorMargin(1));
-});
+var soil = ee.Image('OpenLandMap/SOL/SOL_TEXTURE-CLASS_USDA-TT_M/v02');
+var s2 = ee.ImageCollection('COPERNICUS/S2_HARMONIZED');
+var dwCollection = ee.ImageCollection('GOOGLE/DYNAMICWORLD/V1');
+var chirps = ee.ImageCollection('UCSB-CHG/CHIRPS/DAILY');
+var basins7 = ee.FeatureCollection('WWF/HydroSHEDS/v1/Basins/hybas_7');
+var divisions = ee.FeatureCollection('projects/ee-sohan31du/assets/SHP/BD_Division');
+
+
+// ============================================================================
+// 3. AREA OF INTEREST
+// ============================================================================
+
+var basin = basins7.filter(ee.Filter.eq('HYBAS_ID', 4070912240));
+
+var rangpur = divisions.filter(ee.Filter.eq('ADM1_EN', 'Rangpur'));
+
+var aoi = basin.geometry().intersection(
+  rangpur.geometry(),
+  ee.ErrorMargin(1)
+);
 
 Map.centerObject(aoi, 9);
-Map.addLayer(aoi, {}, 'Teesta Basin in BD');
-
-
-var dateStart = '2025-03-01';
-var dateEnd = '2025-04-30';
-
-//455
-
-// **************** R Factor ***************
-var current = CHIRPS.filterDate(dateStart, dateEnd).select('precipitation').sum().clip(aoi);
-Map.addLayer (current, {min: 0, max: 412.29800748825073, palette: ['7e81ff','5b66ff','3d4aff','282cff','183dff','0005ff']}, 'Period Rain', 0)
-
-
-// Resample to 30 m
-var current30m = current
-  .resample('bilinear')   // or 'bicubic'
-  .reproject({
-    crs: 'EPSG:4326',
-    scale: 30
-  });
 
 Map.addLayer(
-  current30m,
-  {
-    min: 0,
-    max: 412.29800748825073,
-    palette: ['7e81ff','5b66ff','3d4aff','282cff','183dff','0005ff']
-  },
-  'Period Rain 30m',
-  0
+  aoi,
+  {color: '333333'},
+  'Teesta Basin in BD',
+  false
 );
 
 
+// ============================================================================
+// 4. SOIL ERODIBILITY FACTOR (K)
+// ============================================================================
 
-var R = ee.Image(current.multiply(0.35).add(38.5)).rename('R'); // Morgan, 2005; Sharpley and Williams, 1990
-Map.addLayer(R, {min:0, max: 228.664176718235, palette: ['0b2dab', '2f35ff', '25cdff', 'fbff18', 'ff3818', 'a52508']}, 'R Factor Map', 0);
+var texture = soil
+  .select('b0')
+  .rename('soil')
+  .clip(aoi);
+
+var K = texture.expression(
+
+  "(b('soil') > 11) ? 0.0053" +
+  ": (b('soil') > 10) ? 0.0170" +
+  ": (b('soil') > 9) ? 0.045" +
+  ": (b('soil') > 8) ? 0.050" +
+  ": (b('soil') > 7) ? 0.0499" +
+  ": (b('soil') > 6) ? 0.0394" +
+  ": (b('soil') > 5) ? 0.0264" +
+  ": (b('soil') > 4) ? 0.0423" +
+  ": (b('soil') > 3) ? 0.0394" +
+  ": (b('soil') > 2) ? 0.036" +
+  ": (b('soil') > 1) ? 0.0341" +
+  ": (b('soil') > 0) ? 0.0288" +
+  ": 0"
+
+).rename('K').clip(aoi);
 
 
+// ============================================================================
+// 5. TOPOGRAPHIC FACTOR (LS)
+// ============================================================================
 
-// **************** K Factor ***************
-var soil2 = soil.select('b0').clip(aoi).rename('soil')     
-
-var K = soil2.expression(
-    "(b('soil') > 11) ? 0.0053" + //Sand
-      ": (b('soil') > 10) ? 0.0170" + //Loamy Sand
-        ": (b('soil') > 9) ? 0.045" + //Silt
-           ": (b('soil') > 8) ? 0.050" + //Sandy Loam
-            ": (b('soil') > 7) ? 0.0499" + //Silt Loam
-            ": (b('soil') > 6) ? 0.0394" + //Loam
-            ": (b('soil') > 5) ? 0.0264" + //Sandy Clay Loam
-            ": (b('soil') > 4) ? 0.0423" + //Silt Clay Loam
-            ": (b('soil') > 3) ? 0.0394" + //Clay Loam
-            ": (b('soil') > 2) ? 0.036" + //Sandy Clay
-            ": (b('soil') > 1) ? 0.0341" + //Silt Clay
-            ": (b('soil') > 0) ? 0.0288" + //Clay
-             ": 0") //Clay
-             .rename('K').clip(aoi);   
-            
-Map.addLayer(K, {min: 0, max: 0.0394, palette: ['f7ff90','ffed5f','ffc822','ff921c','ff541e','ab0d0d']}, 'KFactor Map', 0);
-
-
-// -----------------------------
-// 2. NASADEM DEM
-// -----------------------------
+// NASADEM elevation
 var dem = ee.Image('NASA/NASADEM_HGT/001')
   .select('elevation')
   .clip(aoi);
 
-Map.addLayer(dem, {min: 0, max: 3000}, 'DEM', 0);
+// Slope in degrees
+var slopeDeg = ee.Terrain.slope(dem)
+  .rename('slope');
 
-// -----------------------------
-// 3. Slope from NASADEM
-// -----------------------------
-var slopeDeg = ee.Terrain.slope(dem).rename('slope');
-var slopeRad = slopeDeg.multiply(Math.PI).divide(180).rename('slope_rad');
+// Convert slope to radians
+var slopeRad = slopeDeg.multiply(Math.PI / 180);
 
-Map.addLayer(slopeDeg, {min: 0, max: 30}, 'Slope (degree)', 0);
-
-// -----------------------------
-// 4. Flow accumulation
-// -----------------------------
-// HydroSHEDS 15 arc-second flow accumulation
-var fa = ee.Image('WWF/HydroSHEDS/15ACC')
+// HydroSHEDS flow accumulation
+var flowAccum = ee.Image(
+  'WWF/HydroSHEDS/15ACC'
+)
   .select('b1')
   .clip(aoi)
   .rename('flow_acc');
 
-// Reproject to DEM grid
-var fa30 = fa.resample('bilinear').reproject(dem.projection());
+// Resample flow accumulation
+var fa30 = flowAccum
+  .resample('bilinear')
+  .reproject(dem.projection());
 
-Map.addLayer(fa30, {min: 0, max: 5000}, 'Flow Accumulation', 0);
+// Cell size
+var cellSize = ee.Image.pixelArea().sqrt();
 
-// -----------------------------
-// 5. Cell size
-// -----------------------------
-var cellSize = ee.Image.pixelArea().sqrt().rename('cellsize');
-
-
+// LS exponents
 var m = 0.4;
 var n = 1.3;
 
-// Avoid zero values only for computation stability
-var areaTerm = fa30.multiply(cellSize).divide(22.13).max(0.001);
-var slopeTerm = slopeRad.sin().divide(0.0896).max(0.001);
+// Slope-length component
+var areaTerm = fa30
+  .multiply(cellSize)
+  .divide(22.13)
+  .max(0.001);
 
-// Final LS
+// Slope-steepness component
+var slopeTerm = slopeRad
+  .sin()
+  .divide(0.0896)
+  .max(0.001);
+
+// Combined LS factor
 var LS = areaTerm.pow(m)
   .multiply(slopeTerm.pow(n))
   .rename('LS')
   .clip(aoi);
+
+
+// ============================================================================
+// 6. SEDIMENT DELIVERY RATIO (SDR)
+// ============================================================================
+
+// Original spatial logistic SDR formulation
+
+var Dup = flowAccum
+  .add(1)
+  .log()
+  .multiply(K.add(0.001));
+
+var Ddn = slopeRad
+  .sin()
+  .add(0.001);
+
+var IC = Dup
+  .subtract(Ddn)
+  .rename('IC');
+
+var SDR = IC.expression(
+
+  '1 / (1 + exp(-a * (IC - b)))',
+
+  {
+    IC: IC,
+    a: 1.5,
+    b: 0.5
+  }
+
+).rename('SDR').clip(aoi);
+
+
+// ============================================================================
+// 7. STATIC FACTOR MAPS
+// ============================================================================
+
+Map.addLayer(
+  K,
+  {
+    min: 0,
+    max: 0.05,
+    palette: ['fff7bc', 'fec44f', 'd95f0e']
+  },
+  'K Factor',
+  false
+);
 
 Map.addLayer(
   LS,
   {
     min: 0,
     max: 100,
-    palette: ['white', 'cyan', 'blue', 'yellow', 'orange', 'red']
+    palette: ['ffffff', '00ffff', 'ffff00', 'ff0000']
   },
-  'LS Factor'
+  'LS Factor',
+  false
 );
 
-
-
-// **************** C Factor ***************
-
-var s21 = s2.filterBounds(aoi).filterDate(dateStart, dateEnd).mean();
-var image_ndvi = s21.normalizedDifference(['B8','B4']).rename("NDVI");
-
-Map.addLayer (image_ndvi, {min: -1, max: 1, palette: ['ffffff','cc9966','cc9900','996600','33cc00','009900']}, 'NDVI', 0);
-
-var C = ee.Image(1)
-        .subtract(image_ndvi)
-        .divide(2)
-        .pow(image_ndvi.add(1))
-        .rename('C'); //Lin et al., (2002); Islam et al., (2024) [BD RUSLE]
-
-Map.addLayer (C, {min: -1, max: 1, palette: ['9a9a9a','c9cc58','92cc3a','3a99aa','1a46cc','2e3597']}, 'C Map',0);
-
-
-// **************** P Factor ***************
-// =====================
-// Load Dynamic World
-// =====================
-var dw = ee.ImageCollection("GOOGLE/DYNAMICWORLD/V1")
-  .filterDate(dateStart, dateEnd)
-  .filterBounds(aoi)
-  .select('label')
-  .mode()                 // categorical composite
-  .clip(aoi)
-  .rename('lulc');
-
 Map.addLayer(
-  dw,
+  SDR,
   {
     min: 0,
-    max: 8,
-    palette: ['0005ff','00851e','00d31d','18ffcc','dbff26','7eff83','ff0000','ff7d3b','e7e7e7']
+    max: 1,
+    palette: ['002a7f', 'ffff99', 'cb181d']
   },
-  'DW LULC',
-  0
-);
-
-// =====================
-// Make sure slope exists
-// =====================
-// Example from DEM:
-var dem = ee.Image('NASA/NASADEM_HGT/001')
-  .select('elevation')
-  .clip(aoi);
-
-var slope = ee.Terrain.slope(dem)
-  .rename('slope')
-  .clip(aoi);
-
-// =====================
-// Combine LULC + SLOPE
-// =====================
-var lulc_slope = dw.addBands(slope);
-
-// =====================
-// P-Factor Computation
-// =====================
-// Dynamic World classes:
-// 0 = water
-// 1 = trees
-// 2 = grass
-// 3 = flooded vegetation
-// 4 = crops
-// 5 = shrub & scrub
-// 6 = built
-// 7 = bare
-// 8 = snow & ice
-
-var P = lulc_slope.expression(
-  "(lulc < 4) ? 0.8" +
-  " : (lulc == 4) ? " +
-      "((slope < 2) ? 0.6" +
-      " : (slope < 5) ? 0.5" +
-      " : (slope < 8) ? 0.5" +
-      " : (slope < 12) ? 0.6" +
-      " : (slope < 16) ? 0.7" +
-      " : (slope < 20) ? 0.8" +
-      " : 0.9)" +
-  " : ((lulc >= 5 && lulc <= 8) ? 1 : 1)",
-  {
-    lulc: lulc_slope.select('lulc'),
-    slope: lulc_slope.select('slope')
-  }
-).rename('P').clip(aoi);
-
-Map.addLayer(
-  P,
-  {min: 0.5, max: 1, palette: ['ff8282','ffc75d','c3ff68','53f5ff','945bff']},
-  'P Factor',
-  0
+  'SDR Factor',
+  false
 );
 
 
-// ================  ESTIMATING SOIL LOSS ===================
-var soil_loss = R.multiply(K).multiply(LS).multiply(C).multiply(P).rename("Soil Loss") //.updateMask(dw.neq(0)); // mask water
+// ============================================================================
+// 8. SEASONAL SOIL LOSS AND SEDIMENT YIELD FUNCTION
+// ============================================================================
+
+function computeSeason(year, season) {
+
+  var isPre = (season === 'Pre');
+
+  // March-April / October-November
+  var startDate = ee.Date.fromYMD(
+    year,
+    isPre ? 3 : 10,
+    1
+  );
+
+  // Exclusive end date
+  var endDate = ee.Date.fromYMD(
+    year,
+    isPre ? 5 : 12,
+    1
+  );
 
 
-var style = ['490eff','12f4ff','12ff50','e5ff12','ff4812']
+  // ------------------------------------------------------------------------
+  // 8.1 RAINFALL EROSIVITY FACTOR (R)
+  // ------------------------------------------------------------------------
 
-Map.addLayer (soil_loss, {min: -0.05, max: 15, palette: ['0da2d1','06c489','b8e510','f5f00c','f99c0a','ff0000']}, 'Soil Loss', 0)
+  var rainfall = chirps
+    .filterDate(startDate, endDate)
+    .select('precipitation')
+    .sum()
+    .clip(aoi);
 
-var SL_class = soil_loss.expression(
-    "(b('Soil Loss') < 2) ? 1" +
-      ": (b('Soil Loss') < 4) ? 2" +
-      ": (b('Soil Loss') < 6) ? 3"+
-      ": (b('Soil Loss') < 8) ? 4"+
-             ": 5")
-             .rename('SL_class').clip(aoi);  
-Map.addLayer (SL_class, {min: 1, max: 5, palette: ['0072ac','0cb2b4','d4eb2c','ef921a','db0000']}, 'Soil Loss Class', 0)
-
-var SL_mean = soil_loss.reduceRegion({
-  geometry: aoi, 
-  reducer: ee.Reducer.mean(), 
-  scale: 30,
-  maxPixels: 1e13
-})
-
-//print ("Mean Soil Loss",SL_mean.get("Soil Loss"))
-
-// Soil Loss Statistics
-var SL_stats = soil_loss.reduceRegion({
-  reducer: ee.Reducer.min()
-    .combine({
-      reducer2: ee.Reducer.max(),
-      sharedInputs: true
-    })
-    .combine({
-      reducer2: ee.Reducer.mean(),
-      sharedInputs: true
-    }),
-  geometry: aoi,
-  scale: 30,
-  maxPixels: 1e13
-});
-
-print('Soil Loss Statistics (t/ha/yr)', SL_stats);
+  var R = rainfall
+    .multiply(0.35)
+    .add(38.5)
+    .rename('R');
 
 
+  // ------------------------------------------------------------------------
+  // 8.2 COVER MANAGEMENT FACTOR (C)
+  // ------------------------------------------------------------------------
+
+  var s2Composite = s2
+    .filterBounds(aoi)
+    .filterDate(startDate, endDate)
+    .mean();
+
+  var ndvi = s2Composite
+    .normalizedDifference(['B8', 'B4']);
+
+  var C = ee.Image(1)
+    .subtract(ndvi)
+    .divide(2)
+    .pow(ndvi.add(1))
+    .rename('C');
 
 
+  // ------------------------------------------------------------------------
+  // 8.3 SUPPORT PRACTICE FACTOR (P)
+  // ------------------------------------------------------------------------
 
-// =========================================================
-// ===============   SEDIMENT DELIVERY RATIO   =============
-// =========================================================
+  var dw = dwCollection
+    .filterBounds(aoi)
+    .filterDate(startDate, endDate)
+    .select('label')
+    .mode()
+    .rename('lulc')
+    .clip(aoi);
 
-var flowAccum = ee.Image("WWF/HydroSHEDS/15ACC")
-  .select('b1')
-  .clip(aoi);
+  var P = dw.addBands(slopeDeg).expression(
 
-var slopeRad = slope.multiply(Math.PI).divide(180);
+    '(lulc < 4) ? 0.8' +
 
-// Upslope component
-var Dup = flowAccum.add(1).log()
-  .multiply(K.add(0.001))
-  .rename('Dup');
+    ' : (lulc == 4) ? ' +
 
-// Downslope component
-var Ddn = slopeRad.sin().add(0.001).rename('Ddn');
+    '((slope < 2) ? 0.6' +
+    ' : (slope < 5) ? 0.5' +
+    ' : (slope < 8) ? 0.5' +
+    ' : (slope < 12) ? 0.6' +
+    ' : (slope < 16) ? 0.7' +
+    ' : (slope < 20) ? 0.8' +
+    ' : 0.9)' +
 
-// Connectivity Index
-var IC = Dup.subtract(Ddn).rename('IC');
+    ' : ((lulc >= 5 && lulc <= 8) ? 1 : 1)',
 
-// SDR (logistic)
-var SDR = IC.expression(
-  "1 / (1 + exp(-a * (IC - b)))", {
-    IC: IC,
-    a: 1.5,
-    b: 0.5
-}).rename('SDR');
+    {
+      lulc: dw,
+      slope: slopeDeg
+    }
 
-
-// ===============================
-// 9. SEDIMENT YIELD
-// ===============================
-var sedimentYield = soil_loss.multiply(SDR).rename('sediment_yield');
-
-Map.addLayer(sedimentYield, {min:0, max:20, palette:['green','orange','red']}, 'Sediment Yield');
-
-// ---------- Step 6: Export or Statistics ----------
-var SY_mean = sedimentYield.reduceRegion({
-  geometry: aoi,
-  reducer: ee.Reducer.mean(),
-  scale: 30,
-  maxPixels: 1e10
-});
-
-//print("Mean Sediment Yield (tons/ha/year)", SY_mean);
+  ).rename('P').clip(aoi);
 
 
-// Sediment Yield Statistics
-var SY_stats = sedimentYield.reduceRegion({
-  reducer: ee.Reducer.min()
-    .combine({
-      reducer2: ee.Reducer.max(),
-      sharedInputs: true
-    })
-    .combine({
-      reducer2: ee.Reducer.mean(),
-      sharedInputs: true
-    }),
-  geometry: aoi,
-  scale: 30,
-  maxPixels: 1e13
-});
+  // ------------------------------------------------------------------------
+  // 8.4 RUSLE SOIL LOSS
+  // ------------------------------------------------------------------------
 
-print('Sediment Yield Statistics (t/ha/yr)', SY_stats);
+  var soilLoss = R
+    .multiply(K)
+    .multiply(LS)
+    .multiply(C)
+    .multiply(P)
+    .rename('soil_loss')
+    .clip(aoi);
 
 
+  // ------------------------------------------------------------------------
+  // 8.5 SEDIMENT YIELD
+  // ------------------------------------------------------------------------
+
+  var sedimentYield = soilLoss
+    .multiply(SDR)
+    .rename('sediment_yield')
+    .clip(aoi);
 
 
-// ===============================
-// 10. EXPORT TO DRIVE (UTM 45N)
-// ===============================
+  // Return both outputs
+  return {
 
-var exportImage = function(image, name, scale) {
-  Export.image.toDrive({
-    image: image,
-    description: name,
-    fileNamePrefix: name,
-    region: aoi,
-    scale: scale,
-    crs: 'EPSG:32645',
-    maxPixels: 1e13,
-    fileFormat: 'GeoTIFF'
-  });
+    soilLoss: soilLoss,
+
+    sedimentYield: sedimentYield
+
+  };
+
+}
+
+
+// ============================================================================
+// 9. VISUALIZATION PARAMETERS
+// ============================================================================
+
+// Same color range for each year and season
+
+var soilVis = {
+
+  min: 0,
+
+  max: 20,
+
+  palette: [
+    '0066cc',
+    '00c5cd',
+    'a2d729',
+    'ffff00',
+    'ff8c00',
+    'cc0000'
+  ]
+
+};
+
+var yieldVis = {
+
+  min: 0,
+
+  max: 20,
+
+  palette: [
+    '008000',
+    'ffff00',
+    'ff9900',
+    'ff0000'
+  ]
+
 };
 
 
-exportImage(soil_loss.toFloat(), 'Soil_Loss', 30);
-exportImage(SDR.toFloat(), 'SDR', 30);
-exportImage(sedimentYield.toFloat(), 'Sediment_Yield', 30);
+// ============================================================================
+// 10. OPTIONAL GEOTIFF EXPORT FUNCTION
+// ============================================================================
+
+function exportMap(image, variable, year, season) {
+
+  var name = variable + '_' + year + '_' + season;
+
+  Export.image.toDrive({
+
+    image: image.toFloat(),
+
+    description: name,
+
+    fileNamePrefix: name,
+
+    region: aoi,
+
+    scale: 30,
+
+    crs: 'EPSG:32645',
+
+    maxPixels: 1e13,
+
+    fileFormat: 'GeoTIFF'
+
+  });
+
+}
 
 
-// =========================================================================
-// 11. MULTI-YEAR TIMESERIES LOOP & CHART GENERATION (2018 - 2025)
-// =========================================================================
+// ============================================================================
+// 11. CREATE ALL 32 SEASONAL MAP LAYERS
+// ============================================================================
 
-// Define the year range list
-var years = ee.List.sequence(2018, 2025);
+// No reduceRegion() calls inside the loop.
+//
+// 16 soil-loss maps
+// 16 sediment-yield maps
+//
+// Images are stacked into 32 bands for statistical analysis.
 
-// Map over the years to calculate dynamic inputs and final Sediment Yield
-var annualSedimentYieldCollection = ee.ImageCollection(years.map(function(year) {
-  var yearStr = ee.Number(year).format('%d');
-  
-  // Set up annual matching date ranges (using your specific month/day profile)
-  var startYearDate = ee.Date.fromYMD(year, 3, 1);  // March 1st
-  var endYearDate = ee.Date.fromYMD(year, 4, 30);  // April 30th
-  
-  // 1. Dynamic R Factor (CHIRPS)
-  var annualRain = CHIRPS.filterDate(startYearDate, endYearDate)
-                         .select('precipitation')
-                         .sum()
-                         .clip(aoi);
-  var annualR = annualRain.multiply(0.35).add(38.5).rename('R');
-  
-  // 2. Dynamic C Factor (Sentinel-2)
-  var annualS2 = s2.filterBounds(aoi)
-                   .filterDate(startYearDate, endYearDate)
-                   .mean();
-  var annualNDVI = annualS2.normalizedDifference(['B8','B4']).rename("NDVI");
-  var annualC = ee.Image(1).subtract(annualNDVI)
-                           .divide(2)
-                           .pow(annualNDVI.add(1))
-                           .rename('C');
-                           
-  // 3. Dynamic P Factor (Dynamic World Map)
-  var annualDW = ee.ImageCollection("GOOGLE/DYNAMICWORLD/V1")
-                   .filterDate(startYearDate, endYearDate)
-                   .filterBounds(aoi)
-                   .select('label')
-                   .mode()
-                   .clip(aoi)
-                   .rename('lulc');
-  
-  var annualLulcSlope = annualDW.addBands(slope);
-  var annualP = annualLulcSlope.expression(
-    "(lulc < 4) ? 0.8" +
-    " : (lulc == 4) ? " +
-        "((slope < 2) ? 0.6" +
-         " : (slope < 5) ? 0.5" +
-         " : (slope < 8) ? 0.5" +
-         " : (slope < 12) ? 0.6" +
-         " : (slope < 16) ? 0.7" +
-         " : (slope < 20) ? 0.8" +
-         " : 0.9)" +
-    " : ((lulc >= 5 && lulc <= 8) ? 1 : 1)",
-    {
-      lulc: annualLulcSlope.select('lulc'),
-      slope: annualLulcSlope.select('slope')
-    }
-  ).rename('P').clip(aoi);
-  
-  // 4. Calculate Dynamic Annual Soil Loss
-  // Note: K and LS are static constraints based on geomorphology & geology
-  var annualSoilLoss = annualR.multiply(K).multiply(LS).multiply(annualC).multiply(annualP).rename("Soil_Loss");
-  
-  // 5. Calculate Final Annual Sediment Yield 
-  // Note: SDR calculation uses static terrain datasets (HydroSHEDS/NASADEM)
-  var annualSedimentYield = annualSoilLoss.multiply(SDR)
-                                          .rename('sediment_yield')
-                                          .set('year', year)
-                                          .set('system:time_start', startYearDate.millis());
-  
-  return annualSedimentYield;
-}));
+var combinedStack = null;
 
-// Create a visual time-series trend line chart in the console panel
-var syChart = ui.Chart.image.series({
-  imageCollection: annualSedimentYieldCollection.select('sediment_yield'),
-  region: aoi,
-  reducer: ee.Reducer.mean(),
-  scale: 30,
-  xProperty: 'system:time_start'
-}).setOptions({
-  title: 'Seasonal Mean Sediment Yield Trend (2018-2025)',
-  vAxis: {title: 'Sediment Yield (tons/ha/season)'},
-  hAxis: {title: 'Year', format: 'yyyy'},
-  lineWidth: 2,
-  pointSize: 5,
-  series: {
-    0: {color: '#cc3300'} // Visual representation: Dark rusty red
+for (
+  var year = START_YEAR;
+  year <= END_YEAR;
+  year++
+) {
+
+  // Seasonal calculations
+  var pre = computeSeason(year, 'Pre');
+
+  var post = computeSeason(year, 'Post');
+
+
+  // ------------------------------------------------------------------------
+  // 11.1 SOIL LOSS MAPS
+  // ------------------------------------------------------------------------
+
+  Map.addLayer(
+
+    pre.soilLoss,
+
+    soilVis,
+
+    'Soil Loss ' + year + ' (Pre)',
+
+    false
+
+  );
+
+  Map.addLayer(
+
+    post.soilLoss,
+
+    soilVis,
+
+    'Soil Loss ' + year + ' (Post)',
+
+    false
+
+  );
+
+
+  // ------------------------------------------------------------------------
+  // 11.2 SEDIMENT YIELD MAPS
+  // ------------------------------------------------------------------------
+
+  Map.addLayer(
+
+    pre.sedimentYield,
+
+    yieldVis,
+
+    'Sediment Yield ' + year + ' (Pre)',
+
+    false
+
+  );
+
+  Map.addLayer(
+
+    post.sedimentYield,
+
+    yieldVis,
+
+    'Sediment Yield ' + year + ' (Post)',
+
+    year === END_YEAR
+
+  );
+
+
+  // ------------------------------------------------------------------------
+  // 11.3 CREATE UNIQUE BANDS FOR EACH OUTPUT
+  // ------------------------------------------------------------------------
+
+  var yearBands = pre.soilLoss
+    .rename('SL_' + year + '_Pre')
+
+    .addBands(
+      post.soilLoss.rename('SL_' + year + '_Post')
+    )
+
+    .addBands(
+      pre.sedimentYield.rename('SY_' + year + '_Pre')
+    )
+
+    .addBands(
+      post.sedimentYield.rename('SY_' + year + '_Post')
+    );
+
+
+  // ------------------------------------------------------------------------
+  // 11.4 COMBINE ALL IMAGES
+  // ------------------------------------------------------------------------
+
+  if (combinedStack === null) {
+
+    combinedStack = yearBands;
+
+  } else {
+
+    combinedStack = combinedStack.addBands(yearBands);
+
   }
+
+
+  // ------------------------------------------------------------------------
+  // 11.5 OPTIONAL GEOTIFF EXPORT
+  // ------------------------------------------------------------------------
+
+  if (EXPORT_MAPS) {
+
+    exportMap(
+      pre.soilLoss,
+      'Soil_Loss',
+      year,
+      'Pre'
+    );
+
+    exportMap(
+      post.soilLoss,
+      'Soil_Loss',
+      year,
+      'Post'
+    );
+
+    exportMap(
+      pre.sedimentYield,
+      'Sediment_Yield',
+      year,
+      'Pre'
+    );
+
+    exportMap(
+      post.sedimentYield,
+      'Sediment_Yield',
+      year,
+      'Post'
+    );
+
+  }
+
+}
+
+
+// ============================================================================
+// 12. SINGLE AGGREGATION FOR ALL STATISTICS
+// ============================================================================
+
+// Mean, minimum and maximum for all 32 bands.
+// One reduceRegion() operation avoids separate
+// concurrent regional aggregations.
+
+// Combined reducer
+var statsReducer = ee.Reducer.mean().combine({
+
+  reducer2: ee.Reducer.minMax(),
+
+  sharedInputs: true
+
 });
 
-print('--- MULTI-YEAR ANALYSIS CHART ---', syChart);
+// Compute all statistics together
+var stats = combinedStack.reduceRegion({
+
+  reducer: statsReducer,
+
+  geometry: aoi,
+
+  scale: ANALYSIS_SCALE,
+
+  maxPixels: 1e13,
+
+  tileScale: 8
+
+});
+
+
+// ============================================================================
+// 13. SOIL LOSS AND SEDIMENT YIELD STATISTICS TABLES
+// ============================================================================
+
+// Each table contains:
+// Year
+// Pre-monsoon mean
+// Post-monsoon mean
+// Pre-monsoon minimum
+// Pre-monsoon maximum
+// Post-monsoon minimum
+// Post-monsoon maximum
+
+var soilRows = [];
+
+var yieldRows = [];
+
+
+for (
+  var y = START_YEAR;
+  y <= END_YEAR;
+  y++
+) {
+
+  var slPre = 'SL_' + y + '_Pre_';
+
+  var slPost = 'SL_' + y + '_Post_';
+
+  var syPre = 'SY_' + y + '_Pre_';
+
+  var syPost = 'SY_' + y + '_Post_';
+
+
+  // ------------------------------------------------------------------------
+  // 13.1 SOIL LOSS STATISTICS
+  // ------------------------------------------------------------------------
+
+  soilRows.push(
+
+    ee.Feature(null, {
+
+      year: y,
+
+      'Pre-monsoon': stats.get(slPre + 'mean'),
+
+      'Post-monsoon': stats.get(slPost + 'mean'),
+
+      Pre_Min: stats.get(slPre + 'min'),
+
+      Pre_Max: stats.get(slPre + 'max'),
+
+      Post_Min: stats.get(slPost + 'min'),
+
+      Post_Max: stats.get(slPost + 'max')
+
+    })
+
+  );
+
+
+  // ------------------------------------------------------------------------
+  // 13.2 SEDIMENT YIELD STATISTICS
+  // ------------------------------------------------------------------------
+
+  yieldRows.push(
+
+    ee.Feature(null, {
+
+      year: y,
+
+      'Pre-monsoon': stats.get(syPre + 'mean'),
+
+      'Post-monsoon': stats.get(syPost + 'mean'),
+
+      Pre_Min: stats.get(syPre + 'min'),
+
+      Pre_Max: stats.get(syPre + 'max'),
+
+      Post_Min: stats.get(syPost + 'min'),
+
+      Post_Max: stats.get(syPost + 'max')
+
+    })
+
+  );
+
+}
+
+
+// FeatureCollections
+var soilLossStats = ee.FeatureCollection(
+  soilRows
+).sort('year');
+
+var sedimentYieldStats = ee.FeatureCollection(
+  yieldRows
+).sort('year');
+
+
+// Display statistics
+print(
+  'Soil Loss Statistics (t/ha/season)',
+  soilLossStats
+);
+
+print(
+  'Sediment Yield Statistics (t/ha/season)',
+  sedimentYieldStats
+);
+
+
+// ============================================================================
+// 14. SOIL LOSS COMPARISON CHART (2018-2025)
+// ============================================================================
+
+var yearTicks = [
+  2018, 2019, 2020, 2021,
+  2022, 2023, 2024, 2025
+];
+
+var soilChart = ui.Chart.feature.byFeature({
+
+  features: soilLossStats,
+
+  xProperty: 'year',
+
+  yProperties: [
+    'Pre-monsoon',
+    'Post-monsoon'
+  ]
+
+})
+
+.setChartType('LineChart')
+
+.setOptions({
+
+  title: 'Mean Seasonal Soil Loss (2018-2025)',
+
+  hAxis: {
+
+    title: 'Year',
+
+    ticks: yearTicks,
+
+    format: '0'
+
+  },
+
+  vAxis: {
+
+    title: 'Mean Soil Loss (t/ha/season)',
+
+    viewWindow: {
+      min: 0
+    }
+
+  },
+
+  legend: {
+    position: 'bottom'
+  },
+
+  lineWidth: 3,
+
+  pointSize: 6,
+
+  series: {
+
+    0: {
+      color: '#2471a3'
+    },
+
+    1: {
+      color: '#cb4335'
+    }
+
+  }
+
+});
+
+print(
+  'Soil Loss: Pre- vs Post-Monsoon',
+  soilChart
+);
+
+
+// ============================================================================
+// 15. SEDIMENT YIELD COMPARISON CHART (2018-2025)
+// ============================================================================
+
+var yieldChart = ui.Chart.feature.byFeature({
+
+  features: sedimentYieldStats,
+
+  xProperty: 'year',
+
+  yProperties: [
+    'Pre-monsoon',
+    'Post-monsoon'
+  ]
+
+})
+
+.setChartType('LineChart')
+
+.setOptions({
+
+  title: 'Mean Seasonal Sediment Yield (2018-2025)',
+
+  hAxis: {
+
+    title: 'Year',
+
+    ticks: yearTicks,
+
+    format: '0'
+
+  },
+
+  vAxis: {
+
+    title: 'Mean Sediment Yield (t/ha/season)',
+
+    viewWindow: {
+      min: 0
+    }
+
+  },
+
+  legend: {
+    position: 'bottom'
+  },
+
+  lineWidth: 3,
+
+  pointSize: 6,
+
+  series: {
+
+    0: {
+      color: '#2471a3'
+    },
+
+    1: {
+      color: '#cb4335'
+    }
+
+  }
+
+});
+
+print(
+  'Sediment Yield: Pre- vs Post-Monsoon',
+  yieldChart
+);
+
+
+// ============================================================================
+// 16. OPTIONAL CSV EXPORTS
+// ============================================================================
+
+if (EXPORT_CSV) {
+
+  // Soil loss statistics
+  Export.table.toDrive({
+
+    collection: soilLossStats,
+
+    description:
+      'Teesta_Soil_Loss_Stats_2018_2025',
+
+    fileFormat: 'CSV'
+
+  });
+
+
+  // Sediment yield statistics
+  Export.table.toDrive({
+
+    collection: sedimentYieldStats,
+
+    description:
+      'Teesta_Sediment_Yield_Stats_2018_2025',
+
+    fileFormat: 'CSV'
+
+  });
+
+}
+
+
+// ============================================================================
+// END OF SCRIPT
+// ============================================================================
