@@ -1,4 +1,3 @@
-
 // ============================================================================
 // LOWER TEESTA: SEASONAL SOIL LOSS & SEDIMENT YIELD, 2018-2025
 // Pre-monsoon : March 1-April 30
@@ -35,6 +34,10 @@ var divisions = ee.FeatureCollection('projects/ee-sohan31du/assets/SHP/BD_Divisi
 // ============================================================================
 // 3. AREA OF INTEREST
 // ============================================================================
+
+// IMPORTANT INSRUCTIONS 
+// If you want to define AOI by intersecting two geographic boundaries (i.e. clipping a large basin into smaller area), modify the following codes accordingly.
+// If you want to use your own AOI asset without intersection, add "//" before the following three variable definitions (basin, rangpur, aoi) from Line 42–Line 49.
 
 var basin = basins7.filter(ee.Filter.eq('HYBAS_ID', 4070912240));
 
