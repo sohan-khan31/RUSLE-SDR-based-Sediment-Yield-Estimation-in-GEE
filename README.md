@@ -8,7 +8,7 @@ This repository contains the Google Earth Engine (GEE) JavaScript code used for 
 
 GEE snapshot:
 
-https://code.earthengine.google.com/13c2dcf3ce881e9878f683e21a1ed785
+https://code.earthengine.google.com/dee7e863fe55888f384984816406c1b5
 
 Main source file in this repository:
 
