@@ -1,8 +1,8 @@
-# Assessment of sediment yield at lower Teesta River Basin of Bangladesh using geospatial technique
+# Assessment of Sediment Yield In the Lower Teesta River Basin of Bangladesh: A GEE-Based Geospatial Technique
 
 This repository contains the Google Earth Engine (GEE) JavaScript code used for the research titled:
 
-**“Assessment of sediment yield at lower Teesta River Basin of Bangladesh using geospatial technique”**
+**“AAssessment of Sediment Yield In the Lower Teesta River Basin of Bangladesh: A GEE-Based Geospatial Technique”**
 
 ## Google Earth Engine script
 
