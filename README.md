@@ -62,8 +62,8 @@ If it is retained in the published script, consider making it publicly readable 
 
 The principal analysis in the supplied script uses:
 
-- Start: 1 March 2025
-- End: 30 April 2025
+- Start: 1 March 2018
+- End: 30 November 2025
 
 The script also generates a seasonal sediment-yield time series for **2018–2025**, using the March–April period for each year.
 
